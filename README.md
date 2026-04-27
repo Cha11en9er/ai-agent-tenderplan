@@ -43,6 +43,8 @@ python -m playwright --version
    - `LOGIN=...`
    - `PASSWORD=...`
    - `TARGET_KEY_TEXT=ремонт маленький` (или любое другое название ключа)
+   - `TENDER_DONE_MARK_TEXT=пройден, анализируем` (метка после успешного разбора)
+   - `TENDERS_TO_PROCESS=3` (сколько неотмеченных тендеров обработать за запуск)
 2. Запустите скрипт:
 ```bash
 python mian_parse_exactly_key.py
