@@ -13,7 +13,8 @@ load_dotenv()
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 AUTH_FILE = SCRIPT_DIR / "auth.json"
-ANALYZED_JSON_FILE = SCRIPT_DIR / "tenders_data_analyzed.json"
+ACCEPT_JSON_FILE = SCRIPT_DIR / "tenders_accept.json"
+REJECT_JSON_FILE = SCRIPT_DIR / "tenders_reject.json"
 BASE_APP_URL = "https://tenderplan.ru/app"
 
 OPEN_MARK_TIMEOUT_MS = 15_000
@@ -46,14 +47,20 @@ async def ensure_session(page: Page, context: BrowserContext) -> None:
     print(f"Сессия обновлена: {AUTH_FILE.resolve()}")
 
 
-def load_analyzed_rows() -> list[dict]:
-    if not ANALYZED_JSON_FILE.is_file():
-        raise FileNotFoundError(f"Не найден файл: {ANALYZED_JSON_FILE}")
-    # Поддержка файлов с BOM (часто после записи через PowerShell Out-File -Encoding UTF8).
-    raw = json.loads(ANALYZED_JSON_FILE.read_text(encoding="utf-8-sig"))
+def load_json_list(path: Path) -> list[dict]:
+    if not path.is_file():
+        return []
+    raw = json.loads(path.read_text(encoding="utf-8-sig"))
     if not isinstance(raw, list):
-        raise ValueError("tenders_data_analyzed.json должен быть JSON-массивом")
+        raise ValueError(f"{path.name} должен быть JSON-массивом")
     return [x for x in raw if isinstance(x, dict)]
+
+
+def save_json_list(path: Path, rows: list[dict]) -> None:
+    path.write_text(
+        json.dumps(rows, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 async def open_mark_dropdown(page: Page) -> None:
@@ -80,10 +87,16 @@ async def set_mark_by_text(page: Page, mark_text: str) -> None:
     await asyncio.sleep(0.6)
 
 
-async def process_one_tender(page: Page, tender_row: dict, idx: int, total: int) -> bool:
+async def process_one_tender(
+    page: Page,
+    tender_row: dict,
+    target_status: str,
+    idx: int,
+    total: int,
+) -> bool:
     tender_id = str(tender_row.get("id", "")).strip()
     tender_url = str(tender_row.get("url", "")).strip()
-    target_status = str(tender_row.get("status", "")).strip().lower()
+    target_status = str(target_status or "").strip().lower()
 
     if not tender_url:
         print(f"[{idx}/{total}] skip id={tender_id}: нет url")
@@ -103,10 +116,25 @@ async def process_one_tender(page: Page, tender_row: dict, idx: int, total: int)
     return True
 
 
+def collect_unmarked_rows(accept_rows: list[dict], reject_rows: list[dict]) -> list[dict]:
+    queue: list[dict] = []
+    for row in accept_rows:
+        if bool(row.get("is_marked", False)):
+            continue
+        queue.append({"bucket": "accept", "target_status": "подходит нам", "row": row})
+    for row in reject_rows:
+        if bool(row.get("is_marked", False)):
+            continue
+        queue.append({"bucket": "reject", "target_status": "не подходит нам", "row": row})
+    return queue
+
+
 async def main() -> None:
-    rows = load_analyzed_rows()
-    if not rows:
-        print("В tenders_data_analyzed.json нет записей для обработки.")
+    accept_rows = load_json_list(ACCEPT_JSON_FILE)
+    reject_rows = load_json_list(REJECT_JSON_FILE)
+    queue = collect_unmarked_rows(accept_rows, reject_rows)
+    if not queue:
+        print("Нет тендеров для проставления меток (все уже is_marked=true).")
         return
 
     async with async_playwright() as p:
@@ -123,15 +151,21 @@ async def main() -> None:
 
         ok = 0
         failed = 0
-        for i, row in enumerate(rows, start=1):
+        for i, item in enumerate(queue, start=1):
+            row = item["row"]
+            target_status = item["target_status"]
             try:
-                changed = await process_one_tender(page, row, i, len(rows))
+                changed = await process_one_tender(page, row, target_status, i, len(queue))
                 if changed:
+                    row["is_marked"] = True
                     ok += 1
+                    # Сохраняем сразу, чтобы не потерять прогресс.
+                    save_json_list(ACCEPT_JSON_FILE, accept_rows)
+                    save_json_list(REJECT_JSON_FILE, reject_rows)
             except Exception as e:
                 failed += 1
                 rid = row.get("id", "?")
-                print(f"[{i}/{len(rows)}] error id={rid}: {e}")
+                print(f"[{i}/{len(queue)}] error id={rid}: {e}")
                 try:
                     await page.keyboard.press("Escape")
                 except Exception:
@@ -139,7 +173,10 @@ async def main() -> None:
                 await asyncio.sleep(0.5)
 
         await browser.close()
-        print(f"Готово. Установлено меток: {ok}, ошибок: {failed}, всего записей: {len(rows)}")
+        print(
+            f"Готово. Установлено меток: {ok}, ошибок: {failed}, "
+            f"в очереди было: {len(queue)}"
+        )
 
 
 if __name__ == "__main__":

@@ -6,14 +6,14 @@
 - Текущая рабочая папка проекта: `C:\repos\YouDo\ai-agent-tenderplan`
 - Читать карточки тендеров: `C:\repos\YouDo\ai-agent-tenderplan\tenders_data.json`
 - Читать распознанные документы: `C:\repos\YouDo\ai-agent-tenderplan\downloads_recognize\<tender_id>\**\*.txt`
-- Записывать результаты анализа: `C:\repos\YouDo\ai-agent-tenderplan\tenders_data_analyzed.json`
-- Ничего не записывать в `tenders_data.json`
+- Записывать подходящие тендеры: `C:\repos\YouDo\ai-agent-tenderplan\tenders_accept.json`
+- Записывать неподходящие тендеры: `C:\repos\YouDo\ai-agent-tenderplan\tenders_reject.json`
 
 ## Технические правила записи файла (обязательно)
 - При записи через инструмент `Write` поле `content` всегда должно быть **строкой**, а не объектом/массивом.
 - Перед записью сериализуй структуру в JSON-строку (например, с отступами 2 пробела).
 - В `Write` передавай:
-  - `path`: путь к `tenders_data_analyzed.json`
+  - `path`: путь к целевому JSON (`tenders_accept.json` или `tenders_reject.json` или `tenders_data.json`)
   - `content`: строка вида `[\n  {...}\n]`
 - Нельзя передавать в `content` “сырой” массив/объект без сериализации.
 - После записи обязательно прочитай файл и убедись, что JSON валиден.
@@ -36,7 +36,7 @@ $json = @'
   }
 ]
 '@
-$json | Out-File -FilePath "tenders_data_analyzed.json" -Encoding UTF8
+$json | Out-File -FilePath "tenders_accept.json" -Encoding UTF8
 ```
 
 ## Цель
@@ -55,17 +55,19 @@ $json | Out-File -FilePath "tenders_data_analyzed.json" -Encoding UTF8
 2. Найди и прочитай распознанные `.txt` по пути `downloads_recognize/<tender_id>/` (если есть).
 3. Сформируй вердикт.
 4. Создай копию карточки в памяти и только в копии замени поле `status` на `подходит нам` или `не подходит нам`.
-5. Запиши **только копию карточки** в `tenders_data_analyzed.json`:
-   - если файла нет или он пустой, создай JSON-массив;
-   - если уже есть запись с тем же `id`, обнови её;
-   - если записи нет, добавь в конец массива.
-   - в записи обязательно сохрани поле `url` (ссылка на тендер).
-6. `tenders_data.json` используй только как источник чтения:
-   - ничего в нём не меняй;
-   - не перезаписывай его;
-   - не удаляй поля и записи.
-7. Работай только с `tenders_data_analyzed.json` для записи результата.
-8. После записи проверь, что карточка с нужным `id` реально присутствует в `tenders_data_analyzed.json`.
+5. Создай копию карточки в памяти и заполни поля:
+   - `status`: `подходит нам` или `не подходит нам`;
+   - `reason_short`: краткая причина;
+   - `decision`, `confidence`.
+   - `is_marked`: всегда `false` (метка на сайте ещё не проставлена).
+6. Если `status = "подходит нам"`:
+   - запиши/обнови карточку в `tenders_accept.json` (merge по `id`).
+7. Если `status = "не подходит нам"`:
+   - запиши/обнови карточку в `tenders_reject.json` (merge по `id`).
+8. После успешной записи в accept/reject удали эту карточку из `tenders_data.json` (по `id`), чтобы тендер считался проанализированным.
+9. После записи проверь, что:
+   - карточка есть в нужном файле (`accept` или `reject`);
+   - в `tenders_data.json` карточки с этим `id` больше нет.
 
 ## Формат результата в ответе
 Верни JSON:
@@ -78,7 +80,9 @@ $json | Out-File -FilePath "tenders_data_analyzed.json" -Encoding UTF8
   "reason_short": "краткая причина",
   "confidence": 0.0,
   "status_written": true,
-  "analyzed_json_path": "tenders_data_analyzed.json"
+  "target_json_path": "tenders_accept.json | tenders_reject.json",
+  "removed_from_tenders_data": true,
+  "is_marked": false
 }
 ```
 
