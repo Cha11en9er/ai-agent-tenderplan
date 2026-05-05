@@ -7,6 +7,7 @@ import zipfile
 from pathlib import Path
 
 from recognize_files.registry import pick_recognizer
+from runtime_config import load_runtime_settings, recognize_max_zip_depth
 
 
 def _write_text(out_path: Path, text: str) -> None:
@@ -143,7 +144,7 @@ def recognize_tender_downloads(
         shutil.rmtree(out_root, ignore_errors=True)
     out_root.mkdir(parents=True, exist_ok=True)
 
-    max_zip_depth = int(os.getenv("RECOGNIZE_MAX_ZIP_DEPTH", "6"))
+    max_zip_depth = recognize_max_zip_depth(load_runtime_settings())
     for src in files:
         rel = Path(src.name)
         if src.suffix.lower() == ".zip":

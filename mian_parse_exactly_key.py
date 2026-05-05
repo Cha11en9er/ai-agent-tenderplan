@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import os
@@ -8,10 +9,19 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from playwright.async_api import Browser, BrowserContext, Page, TimeoutError, async_playwright
-from tenderplan_login import login
 from recognize_files import recognize_tender_downloads
+from runtime_config import (
+    list_plate_row_px,
+    load_runtime_settings,
+    sidebar_key_text,
+    tender_done_mark_text,
+    tenders_to_process_default,
+)
+from tenderplan_login import login
 
 load_dotenv()
+
+_RUNTIME_SETTINGS = load_runtime_settings()
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 AUTH_FILE = SCRIPT_DIR / "auth.json"
@@ -23,17 +33,16 @@ TENDERS_DOM_DIR = SCRIPT_DIR / "tenders_dom"
 
 BASE_APP_URL = "https://tenderplan.ru/app"
 ROUTER_LINK_TIMEOUT_MS = 120_000
-TARGET_KEY_TEXT = os.getenv("TARGET_KEY_TEXT", "ремонт маленький").strip() or "ремонт маленький"
-TENDER_DONE_MARK_TEXT = (
-    os.getenv("TENDER_DONE_MARK_TEXT", "пройден, анализируем").strip()
-    or "пройден, анализируем"
-)
+
+# Из runtime_settings.json (агент может править на лету); fallback — .env — см. runtime_config.py
+TARGET_KEY_TEXT = sidebar_key_text(_RUNTIME_SETTINGS)
+TENDER_DONE_MARK_TEXT = tender_done_mark_text(_RUNTIME_SETTINGS)
 WAIT_AFTER_CLICK_SEC = 4
 KEY_FIND_TIMEOUT_MS = 2_000
 KEY_FIND_TOTAL_TIMEOUT_MS = 20_000
 PLATE_WAIT_TIMEOUT_MS = 15_000
-TENDERS_TO_PROCESS = int(os.getenv("TENDERS_TO_PROCESS", "3"))
-LIST_PLATE_ROW_PX = int(os.getenv("LIST_PLATE_ROW_PX", "130"))
+TENDERS_TO_PROCESS = tenders_to_process_default(_RUNTIME_SETTINGS)
+LIST_PLATE_ROW_PX = list_plate_row_px(_RUNTIME_SETTINGS)
 
 
 async def _reset_list_scroll_top(page: Page) -> None:
@@ -597,7 +606,15 @@ def run_post_parse_recognition(rows: list[dict]) -> list[dict]:
     return updated_rows
 
 
-async def main() -> None:
+async def main(tenders_to_process_override: int | None = None) -> None:
+    limit = (
+        int(tenders_to_process_override)
+        if tenders_to_process_override is not None
+        else TENDERS_TO_PROCESS
+    )
+    if limit < 1:
+        raise ValueError("Число тендеров к обработке должно быть >= 1")
+
     had_auth_file = AUTH_FILE.is_file()
 
     async with async_playwright() as p:
@@ -626,9 +643,9 @@ async def main() -> None:
         new_rows: list[dict] = []
 
         list_key = (parse_qs(urlparse(page.url).query).get("key") or [""])[0]
-        print(f"Обработка до {TENDERS_TO_PROCESS} неотмеченных тендеров из списка...")
-        for i in range(TENDERS_TO_PROCESS):
-            print(f"[DEBUG] Итерация {i + 1}/{TENDERS_TO_PROCESS}")
+        print(f"Обработка до {limit} неотмеченных тендеров из списка...")
+        for i in range(limit):
+            print(f"[DEBUG] Итерация {i + 1}/{limit}")
             row = await collect_one_tender(page, list_key, analyzed_ids, processed_ids)
             if not row:
                 print("[DEBUG] Подходящий тендер не найден, завершаю цикл.")
@@ -643,7 +660,7 @@ async def main() -> None:
 
         print(
             f"Сценарий завершён: обработано новых тендеров: {len(new_rows)} "
-            f"(план: {TENDERS_TO_PROCESS})."
+            f"(план: {limit})."
         )
         print("[DEBUG] Закрываю браузер и перехожу к пост-распознаванию...")
         await browser.close()
@@ -657,4 +674,13 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    ap = argparse.ArgumentParser(description="Парсер Tenderplan (ключ + неотмеченные карточки).")
+    ap.add_argument(
+        "--process",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Сколько неотмеченных тендеров обработать за прогон (перекрывает TENDERS_TO_PROCESS из .env).",
+    )
+    cli = ap.parse_args()
+    asyncio.run(main(tenders_to_process_override=cli.process))

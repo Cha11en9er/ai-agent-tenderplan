@@ -1,0 +1,8 @@
+{
+  "TENDER_KEY_TEXT": "2026 в док. МАФы уличная",
+  "TARGET_KEY_TEXT": "",
+  "TENDERS_TO_PROCESS": 1,
+  "TENDER_DONE_MARK_TEXT": "На анализе",
+  "LIST_PLATE_ROW_PX": 130,
+  "RECOGNIZE_MAX_ZIP_DEPTH": 6
+}

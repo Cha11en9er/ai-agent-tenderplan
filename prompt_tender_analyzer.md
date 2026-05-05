@@ -86,4 +86,4 @@ $json | Out-File -FilePath "tenders_accept.json" -Encoding UTF8
 }
 ```
 
-сделай анализ для 6 первых тендеров
+сделай анализ для 7 первых тендеров

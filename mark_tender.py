@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 from pathlib import Path
@@ -20,7 +21,10 @@ BASE_APP_URL = "https://tenderplan.ru/app"
 OPEN_MARK_TIMEOUT_MS = 15_000
 SET_MARK_TIMEOUT_MS = 20_000
 
-SUPPORTED_STATUSES = {"подходит нам", "не подходит нам"}
+# Текст пунктов в выпадающем списке меток на tenderplan.ru (как на сайте).
+MARK_UI_ACCEPT = "Подходит"
+MARK_UI_REJECT = "Не подходит"
+SUPPORTED_MARK_UI = {MARK_UI_ACCEPT, MARK_UI_REJECT}
 
 
 async def create_context(browser: Browser) -> BrowserContext:
@@ -90,51 +94,66 @@ async def set_mark_by_text(page: Page, mark_text: str) -> None:
 async def process_one_tender(
     page: Page,
     tender_row: dict,
-    target_status: str,
+    mark_ui_text: str,
     idx: int,
     total: int,
 ) -> bool:
     tender_id = str(tender_row.get("id", "")).strip()
     tender_url = str(tender_row.get("url", "")).strip()
-    target_status = str(target_status or "").strip().lower()
+    mark_ui_text = str(mark_ui_text or "").strip()
 
     if not tender_url:
         print(f"[{idx}/{total}] skip id={tender_id}: нет url")
         return False
-    if target_status not in SUPPORTED_STATUSES:
-        print(f"[{idx}/{total}] skip id={tender_id}: status={target_status!r} не поддержан")
+    if mark_ui_text not in SUPPORTED_MARK_UI:
+        print(f"[{idx}/{total}] skip id={tender_id}: метка={mark_ui_text!r} не поддержана")
         return False
 
-    print(f"[{idx}/{total}] open id={tender_id} -> {target_status}")
+    print(f"[{idx}/{total}] open id={tender_id} -> «{mark_ui_text}»")
     await page.goto(tender_url, timeout=120_000)
     await page.wait_for_load_state("domcontentloaded")
     await asyncio.sleep(1.0)
 
     await open_mark_dropdown(page)
-    await set_mark_by_text(page, target_status)
-    print(f"[{idx}/{total}] ok id={tender_id}: метка «{target_status}» установлена")
+    await set_mark_by_text(page, mark_ui_text)
+    print(f"[{idx}/{total}] ok id={tender_id}: метка «{mark_ui_text}» установлена")
     return True
 
 
-def collect_unmarked_rows(accept_rows: list[dict], reject_rows: list[dict]) -> list[dict]:
+def collect_unmarked_rows(
+    accept_rows: list[dict],
+    reject_rows: list[dict],
+    *,
+    only_id: str | None = None,
+) -> list[dict]:
+    want = str(only_id).strip() if only_id else ""
+
+    def pick(rows: list[dict]) -> list[dict]:
+        out: list[dict] = []
+        for row in rows:
+            if bool(row.get("is_marked", False)):
+                continue
+            rid = str(row.get("id", "")).strip()
+            if want and rid != want:
+                continue
+            out.append(row)
+        return out
+
     queue: list[dict] = []
-    for row in accept_rows:
-        if bool(row.get("is_marked", False)):
-            continue
-        queue.append({"bucket": "accept", "target_status": "подходит нам", "row": row})
-    for row in reject_rows:
-        if bool(row.get("is_marked", False)):
-            continue
-        queue.append({"bucket": "reject", "target_status": "не подходит нам", "row": row})
+    for row in pick(accept_rows):
+        queue.append({"bucket": "accept", "mark_ui_text": MARK_UI_ACCEPT, "row": row})
+    for row in pick(reject_rows):
+        queue.append({"bucket": "reject", "mark_ui_text": MARK_UI_REJECT, "row": row})
     return queue
 
 
-async def main() -> None:
+async def main(*, only_id: str | None = None) -> None:
     accept_rows = load_json_list(ACCEPT_JSON_FILE)
     reject_rows = load_json_list(REJECT_JSON_FILE)
-    queue = collect_unmarked_rows(accept_rows, reject_rows)
+    queue = collect_unmarked_rows(accept_rows, reject_rows, only_id=only_id)
     if not queue:
-        print("Нет тендеров для проставления меток (все уже is_marked=true).")
+        hint = f" (фильтр --only-id={only_id!r})" if only_id else ""
+        print(f"Нет тендеров для проставления меток (все уже is_marked=true или нет совпадений по id){hint}.")
         return
 
     async with async_playwright() as p:
@@ -153,9 +172,9 @@ async def main() -> None:
         failed = 0
         for i, item in enumerate(queue, start=1):
             row = item["row"]
-            target_status = item["target_status"]
+            mark_ui_text = item["mark_ui_text"]
             try:
-                changed = await process_one_tender(page, row, target_status, i, len(queue))
+                changed = await process_one_tender(page, row, mark_ui_text, i, len(queue))
                 if changed:
                     row["is_marked"] = True
                     ok += 1
@@ -179,5 +198,17 @@ async def main() -> None:
         )
 
 
+def _parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Проставить метки Tenderplan из tenders_accept/reject.json")
+    p.add_argument(
+        "--only-id",
+        metavar="ID",
+        default=None,
+        help="Обработать только эту карточку (по полю id в JSON), например для пайплайна «один тендер».",
+    )
+    return p.parse_args()
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    args = _parse_args()
+    asyncio.run(main(only_id=args.only_id))
