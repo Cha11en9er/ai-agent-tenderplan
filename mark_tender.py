@@ -8,6 +8,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
+from tenderplan_comment_ui import focus_editor_and_type, submit_comment
 from tenderplan_login import login
 
 load_dotenv()
@@ -25,6 +26,23 @@ SET_MARK_TIMEOUT_MS = 20_000
 MARK_UI_ACCEPT = "Подходит"
 MARK_UI_REJECT = "Не подходит"
 SUPPORTED_MARK_UI = {MARK_UI_ACCEPT, MARK_UI_REJECT}
+
+COMMENT_SUBMIT_SETTLE_SEC = 1.5
+
+
+def comment_text_for_row(row: dict) -> str:
+    """
+    Текст вердикта для поля комментария на Tenderplan.
+    Приоритет: platform_comment → verdict_message → reason_short.
+    """
+    for key in ("platform_comment", "verdict_message"):
+        raw = row.get(key)
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+    rs = row.get("reason_short")
+    if isinstance(rs, str) and rs.strip():
+        return rs.strip()
+    return ""
 
 
 async def create_context(browser: Browser) -> BrowserContext:
@@ -114,6 +132,18 @@ async def process_one_tender(
     await page.wait_for_load_state("domcontentloaded")
     await asyncio.sleep(1.0)
 
+    comment_text = comment_text_for_row(tender_row)
+    if comment_text:
+        print(f"[{idx}/{total}] комментарий на платформу ({len(comment_text)} симв.)...")
+        await focus_editor_and_type(page, comment_text)
+        await submit_comment(page)
+        await asyncio.sleep(COMMENT_SUBMIT_SETTLE_SEC)
+    else:
+        print(
+            f"[{idx}/{total}] предупреждение id={tender_id}: "
+            "нет platform_comment / verdict_message / reason_short — комментарий пропущен"
+        )
+
     await open_mark_dropdown(page)
     await set_mark_by_text(page, mark_ui_text)
     print(f"[{idx}/{total}] ok id={tender_id}: метка «{mark_ui_text}» установлена")
@@ -199,7 +229,12 @@ async def main(*, only_id: str | None = None) -> None:
 
 
 def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Проставить метки Tenderplan из tenders_accept/reject.json")
+    p = argparse.ArgumentParser(
+        description=(
+            "Отправить комментарий вердикта на карточку Tenderplan (из JSON), "
+            "затем проставить метку «Подходит» / «Не подходит» из tenders_accept/reject.json."
+        )
+    )
     p.add_argument(
         "--only-id",
         metavar="ID",
